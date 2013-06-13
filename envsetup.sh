@@ -4,6 +4,7 @@ Invoke ". build/envsetup.sh" from your shell to add the following functions to y
 - lunch:   lunch <product_name>-<build_variant>
 - tapas:   tapas [<App1> <App2> ...] [arm|x86|mips] [eng|userdebug|user]
 - croot:   Changes directory to the top of the tree.
+- cout:    Changes directory to out.
 - m:       Makes from the top of the tree.
 - mm:      Builds all of the modules in the current directory.
 - mmp:     Builds all of the modules in the current directory and pushes them to the device.
@@ -21,6 +22,7 @@ Invoke ". build/envsetup.sh" from your shell to add the following functions to y
 - mkap:     Builds the module(s) using mka and pushes them to the device.
 - cmka:     Cleans and builds using mka.
 - reposync: Parallel repo sync using ionice and SCHED_BATCH.
+- repopick: Utility to fetch changes from Gerrit.
 - installboot: Installs a boot.img to the connected device.
 - installrecovery: Installs a recovery.img to the connected device.
 
@@ -217,8 +219,6 @@ function set_stuff_for_environment()
     set_java_home
     setpaths
     set_sequence_number
-
-    export ANDROID_BUILD_TOP=$(gettop)
 }
 
 function set_sequence_number()
@@ -252,31 +252,33 @@ function settitle()
         export ANDROID_PROMPT_PREFIX
 
         # Inject build data into hardstatus
-        export PROMPT_COMMAND=$(echo $PROMPT_COMMAND | sed -e 's/\\033]0;\(.*\)\\007/\\033]0;$ANDROID_PROMPT_PREFIX \1\\007/g')
+        export PROMPT_COMMAND="$(echo $PROMPT_COMMAND | sed -e 's/\\033]0;\(.*\)\\007/\\033]0;$ANDROID_PROMPT_PREFIX \1\\007/g')"
     fi
 }
 
 function addcompletions()
 {
-    local T dir f
-
     # Keep us from trying to run in something that isn't bash.
     if [ -z "${BASH_VERSION}" ]; then
         return
     fi
 
     # Keep us from trying to run in bash that's too old.
-    if [ ${BASH_VERSINFO[0]} -lt 3 ]; then
+    if [ "${BASH_VERSINFO[0]}" -lt 4 ] ; then
         return
     fi
 
-    dir="sdk/bash_completion"
+    local T dir f
+
+    dirs="sdk/bash_completion vendor/cm/bash_completion"
+    for dir in $dirs; do
     if [ -d ${dir} ]; then
         for f in `/bin/ls ${dir}/[a-z]*.bash 2> /dev/null`; do
             echo "including $f"
             . $f
         done
     fi
+    done
 }
 
 function choosetype()
@@ -671,7 +673,7 @@ function tapas()
 function eat()
 {
     if [ "$OUT" ] ; then
-        MODVERSION=`sed -n -e'/ro\.cm\.version/s/.*=//p' $OUT/system/build.prop`
+        MODVERSION=$(get_build_var CM_VERSION)
         ZIPFILE=cm-$MODVERSION.zip
         ZIPPATH=$OUT/$ZIPFILE
         if [ ! -f $ZIPPATH ] ; then
@@ -693,28 +695,16 @@ function eat()
         adb root
         sleep 1
         adb wait-for-device
-        SZ=`stat -c %s $ZIPPATH`
-        CACHESIZE=`adb shell busybox df -PB1 /cache | grep /cache | tr -s ' ' | cut -d ' ' -f 4`
-        if [ $CACHESIZE -gt $SZ ];
-        then
-            PUSHDIR=/cache/
-            DIR=cache
-        else
-            PUSHDIR=/storage/sdcard0/
-             # Optional path for sdcard0 in recovery
-             [ -z "$1" ] && DIR=sdcard/0 || DIR=$1
-        fi
-        echo "Pushing $ZIPFILE to $PUSHDIR"
-        if adb push $ZIPPATH $PUSHDIR ; then
-            cat << EOF > /tmp/command
---update_package=/$DIR/$ZIPFILE
+        cat << EOF > /tmp/command
+--sideload
 EOF
-            if adb push /tmp/command /cache/recovery/ ; then
-                echo "Rebooting into recovery for installation"
-                adb reboot recovery
-            fi
-            rm /tmp/command
+        if adb push /tmp/command /cache/recovery/ ; then
+            echo "Rebooting into recovery for sideload installation"
+            adb reboot recovery
+            adb wait-for-sideload
+            adb sideload $ZIPPATH
         fi
+        rm /tmp/command
     else
         echo "Nothing to eat"
         return 1
@@ -792,10 +782,17 @@ function findmakefile()
 
 function mm()
 {
+    local MM_MAKE=make
+    local ARG=
+    for ARG in $@ ; do
+        if [ "$ARG" = mka ]; then
+            MM_MAKE=mka
+        fi
+    done
     # If we're sitting in the root of the build tree, just do a
     # normal make.
     if [ -f build/core/envsetup.mk -a -f Makefile ]; then
-        make $@
+        $MM_MAKE $@
     else
         # Find the closest Android.mk file.
         T=$(gettop)
@@ -807,13 +804,14 @@ function mm()
         elif [ ! "$M" ]; then
             echo "Couldn't locate a makefile from the current directory."
         else
-            ONE_SHOT_MAKEFILE=$M make -C $T all_modules $@
+            ONE_SHOT_MAKEFILE=$M $MM_MAKE -C $T all_modules $@
         fi
     fi
 }
 
 function mmm()
 {
+    local MMM_MAKE=make
     T=$(gettop)
     if [ "$T" ]; then
         local MAKEFILE=
@@ -848,13 +846,15 @@ function mmm()
                     ARGS="$ARGS dist"
                 elif [ "$DIR" = incrementaljavac ]; then
                     ARGS="$ARGS incrementaljavac"
+                elif [ "$DIR" = mka ]; then
+                    MMM_MAKE=mka
                 else
                     echo "No Android.mk in $DIR."
                     return 1
                 fi
             fi
         done
-        ONE_SHOT_MAKEFILE="$MAKEFILE" make -C $T $DASH_ARGS $MODULES $ARGS
+        ONE_SHOT_MAKEFILE="$MAKEFILE" $MMM_MAKE -C $T $DASH_ARGS $MODULES $ARGS
     else
         echo "Couldn't locate the top of the tree.  Try setting TOP."
     fi
@@ -867,6 +867,15 @@ function croot()
         cd $(gettop)
     else
         echo "Couldn't locate the top of the tree.  Try setting TOP."
+    fi
+}
+
+function cout()
+{
+    if [  "$OUT" ]; then
+        cd $OUT
+    else
+        echo "Couldn't locate out directory.  Try setting OUT."
     fi
 }
 
@@ -1356,9 +1365,8 @@ function installboot()
     adb start-server
     adb root
     sleep 1
-    adb wait-for-device
-    adb remount
-    adb wait-for-device
+    adb wait-for-online shell mount /system 2>&1 > /dev/null
+    adb wait-for-online remount
     if (adb shell cat /system/build.prop | grep -q "ro.cm.device=$CM_BUILD");
     then
         adb push $OUT/boot.img /cache/
@@ -1400,9 +1408,8 @@ function installrecovery()
     adb start-server
     adb root
     sleep 1
-    adb wait-for-device
-    adb remount
-    adb wait-for-device
+    adb wait-for-online shell mount /system 2>&1 >> /dev/null
+    adb wait-for-online remount
     if (adb shell cat /system/build.prop | grep -q "ro.cm.device=$CM_BUILD");
     then
         adb push $OUT/recovery.img /cache/
@@ -1833,6 +1840,11 @@ alias mmmp='dopush mmm'
 alias mkap='dopush mka'
 alias cmkap='dopush cmka'
 
+function repopick() {
+    T=$(gettop)
+    $T/build/tools/repopick.py $@
+}
+
 
 # Force JAVA_HOME to point to java 1.6 if it isn't already set
 function set_java_home() {
@@ -1868,3 +1880,5 @@ done
 unset f
 
 addcompletions
+
+export ANDROID_BUILD_TOP=$(gettop)
