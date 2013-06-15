@@ -1328,9 +1328,9 @@ $(INTERNAL_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(DISTTOOLS)
 
 CM_TARGET_PACKAGE := $(PRODUCT_OUT)/cm-$(CM_VERSION).zip
 
-.PHONY: otapackage elemental
+.PHONY: otapackage eclipse
 otapackage: $(INTERNAL_OTA_PACKAGE_TARGET)
-elemental: otapackage
+eclipse: otapackage
 ifneq ($(TARGET_CUSTOM_RELEASETOOL),)
 	@echo -e ${CL_YLW}"Running custom releasetool..."${CL_RST}
 	$(hide) OTAPACKAGE=$(INTERNAL_OTA_PACKAGE_TARGET) APKCERTS=$(APKCERTS_FILE) $(TARGET_CUSTOM_RELEASETOOL)
