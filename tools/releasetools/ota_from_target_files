@@ -421,7 +421,8 @@ def WriteFullOTAPackage(input_zip, output_zip):
   script.Print(" ");
   script.Print(" ");
   script.Print("http://elementalxdesigns.com   ");
-  script.Print("If you enjoy my work please consider a small donation");
+  script.Print("If you enjoy my work please consider");
+  script.Print("a small donation");
   script.Print(" ");
   script.Print(" ");
   script.Print(" ");
